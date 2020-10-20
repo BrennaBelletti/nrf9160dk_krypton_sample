@@ -224,6 +224,7 @@ int provision_certs()
 	int err;
 	int fd;
 	char *p;
+
 	int bytes;
 	size_t off;
 	struct addrinfo *res;
@@ -308,7 +309,7 @@ int provision_certs()
 
 	if (cJSON_IsString(privateKey) && (privateKey->valuestring != NULL))
     {
-        printk("Successfully parsed JSON! \n%s\n", privateKey->valuestring);
+        printk("Length of private key is: %s\n", strlen(privateKey->valuestring));
 
 		/* Store private key */
 		printk("Provisioning private key\n");
@@ -316,7 +317,7 @@ int provision_certs()
 		/*  Provision certificate to the modem */
 		err = modem_key_mgmt_write(33,
 					MODEM_KEY_MGMT_CRED_TYPE_PRIVATE_CERT,
-					privateKey->valuestring, sizeof(privateKey->valuestring) - 1);
+					privateKey->valuestring, strlen(privateKey->valuestring));
 		if (err) {
 			printk("Failed to provision certificate, err %d\n", err);
 			goto clean_up;
@@ -394,11 +395,11 @@ int provision_certs()
 	/* Print HTTP response */
 	p = strstr(cert_recv_buf, "\r\n\r\n");
 	if (p) {
-		cert_recv_buf[off - 1] = '\0';
-		off = p - cert_recv_buf;
-		p = cert_recv_buf + off;
-		p = strstr(p, "\"");
-		p++;
+		//cert_recv_buf[off - 1] = '\0';
+		//off = p - cert_recv_buf;
+		//p = cert_recv_buf + off;
+		//p = strstr(p, "\"");
+		//p++;
 		//printk("\n>\t %s\n\n", p);
 		//printk("\n>\t %s\n\n", recv_buf + off);
 	} else
@@ -412,9 +413,9 @@ int provision_certs()
 
 	char c[] = "\\n"; 
     char d[] = "\n"; 
-	char* result = NULL;
+	char* result = p;
 
-	result = replace_char(p, c, d);
+	//result = replace_char(p, c, d);
 
 	//parse out double quotes
 	//p++;
@@ -423,10 +424,12 @@ int provision_certs()
 	/* Store cert */
 	printk("Provisioning public certificate\n");
 	printk("Public Cert Received! \n%s\n", result);
+
+	printk("Length of public cert is: %s\n", strlen(result));
 	/*  Provision certificate to the modem */
 	err = modem_key_mgmt_write(33,
 				MODEM_KEY_MGMT_CRED_TYPE_PUBLIC_CERT,
-				result, sizeof(result) - 1);
+				result + 1, strlen(result) - 2);
 	if (err) {
 		printk("Failed to provision public certificate, err %d\n", err);
 		goto clean_up;
@@ -502,20 +505,22 @@ int provision_certs()
 		goto clean_up;
 	}
 
-	result = replace_char(p, c, d);
+	//result = replace_char(p, c, d);
+	result = p;
 
 	/* Store cert */ 
 	printk("Provisioning root CA certificate to the modem\n");
 	printk("Root CA Received! \n%s\n", result);
+	printk("Length of root ca is: %s\n", strlen(result));
 
 	//compare root CAs
-	err = modem_key_mgmt_cmp(122, MODEM_KEY_MGMT_CRED_TYPE_CA_CHAIN, result, sizeof(result) - 1);
+	err = modem_key_mgmt_cmp(122, MODEM_KEY_MGMT_CRED_TYPE_CA_CHAIN, result + 1, strlen(result) - 2);
 	printk("credential compare: %d\n", err);
 
 	/*  Provision certificate to the modem */
 	err = modem_key_mgmt_write(33,
 				MODEM_KEY_MGMT_CRED_TYPE_CA_CHAIN,
-				result, sizeof(result) - 1);
+				result + 1, strlen(result) - 2);
 	if (err) {
 		printk("Failed to provision root CA certificate, err %d\n", err);
 		goto clean_up;
@@ -851,15 +856,15 @@ void main(void)
 	printk("OK\n");
 	
 	/* Proviison Krypton Certs */
-/* 	err = provision_certs();
+ 	err = provision_certs();
 	if (err) {
 		printk("Failed to provision Krypton Certs, err %d\n", err);
 		return;
-	} */
+	} 
 
-	printk("Root ca for krypton: \n%s\n", cert);
+	/* printk("Root ca for krypton: \n%s\n", cert);
 	err = modem_key_mgmt_cmp(42, MODEM_KEY_MGMT_CRED_TYPE_CA_CHAIN, cert, sizeof(cert) - 1);
-	printk("credential compare: %d\n", err);
+	printk("credential compare: %d\n", err); */
 
 	/* Use stored certs to make AWS IoT Request */ 
 	printk("Using certs to connect to AWS IoT using MQTT\n");

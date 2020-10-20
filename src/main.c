@@ -309,7 +309,7 @@ int provision_certs()
 
 	if (cJSON_IsString(privateKey) && (privateKey->valuestring != NULL))
     {
-        printk("Length of private key is: %s\n", strlen(privateKey->valuestring));
+        printk("Length of private key is: %d\n", strlen(privateKey->valuestring));
 
 		/* Store private key */
 		printk("Provisioning private key\n");
@@ -425,7 +425,7 @@ int provision_certs()
 	printk("Provisioning public certificate\n");
 	printk("Public Cert Received! \n%s\n", result);
 
-	printk("Length of public cert is: %s\n", strlen(result));
+	printk("Length of public cert is: %d\n", strlen(result));
 	/*  Provision certificate to the modem */
 	err = modem_key_mgmt_write(33,
 				MODEM_KEY_MGMT_CRED_TYPE_PUBLIC_CERT,
@@ -511,7 +511,7 @@ int provision_certs()
 	/* Store cert */ 
 	printk("Provisioning root CA certificate to the modem\n");
 	printk("Root CA Received! \n%s\n", result);
-	printk("Length of root ca is: %s\n", strlen(result));
+	printk("Length of root ca is: %d\n", strlen(result));
 
 	//compare root CAs
 	err = modem_key_mgmt_cmp(122, MODEM_KEY_MGMT_CRED_TYPE_CA_CHAIN, result + 1, strlen(result) - 2);

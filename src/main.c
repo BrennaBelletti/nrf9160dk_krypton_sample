@@ -67,6 +67,12 @@ static struct mqtt_client client;
 /* MQTT Broker details. */
 static struct sockaddr_storage broker;
 
+/* MQTT Client ID. */
+static char *mqtt_client_id;
+
+/* MQTT Client ID. */
+static char *mqtt_host;
+
 /* Connected flag */
 static bool connected;
 
@@ -75,7 +81,7 @@ static struct pollfd fds;
 
 /* Certificate for `krypton.soracom.io` */
 static const char cert[] = {
-	#include "../cert/GlobalSign-Root-CA-R2"
+	#include "../cert/Soracom-Krypton-Root-CA"
 };
 
 BUILD_ASSERT(sizeof(cert) < KB(4), "Certificate too large");
@@ -224,6 +230,11 @@ int provision_certs()
 	int err;
 	int fd;
 	char *p;
+	const cJSON *privateKey;
+	const cJSON *clientId;
+	const cJSON *host;
+	char *pub;
+	char *root;
 
 	int bytes;
 	size_t off;
@@ -232,6 +243,11 @@ int provision_certs()
 		.ai_family = AF_INET,
 		.ai_socktype = SOCK_STREAM,
 	};
+
+	k_timeout_t delay = {60000};
+
+	printk("Downloading certificates from Krypton.\n");
+	printk("Requesting private key.\n");
 
 	err = getaddrinfo("krypton.soracom.io", NULL, &hints, &res);
 	if (err) {
@@ -290,8 +306,6 @@ int provision_certs()
 	if (p) {
 		recv_buf[off + 1] = '\0';
 		off = p - recv_buf;
-		//printk("\n>\t %s\n\n", recv_buf);
-		//printk("\n>\t %s\n\n", recv_buf + off);
 	} else
 	{
 		printk("Krypton did not return private key\n");
@@ -299,35 +313,20 @@ int provision_certs()
 		goto clean_up;
 	}
 	
-
 	/* Parse Krypton Response JSON */
 	char *responsebody = recv_buf + off;
-	const cJSON *privateKey = NULL;
-
+	
 	cJSON *json = cJSON_Parse(responsebody);
 	privateKey = cJSON_GetObjectItemCaseSensitive(json, "privateKey");
 
-	if (cJSON_IsString(privateKey) && (privateKey->valuestring != NULL))
-    {
-        printk("Length of private key is: %d\n", strlen(privateKey->valuestring));
-
-		/* Store private key */
-		printk("Provisioning private key\n");
-
-		/*  Provision certificate to the modem */
-		err = modem_key_mgmt_write(33,
-					MODEM_KEY_MGMT_CRED_TYPE_PRIVATE_CERT,
-					privateKey->valuestring, strlen(privateKey->valuestring));
-		if (err) {
-			printk("Failed to provision certificate, err %d\n", err);
-			goto clean_up;
-		}
-    }
-
+	//Store device client ID returned from Krypton to be used for the mqtt connection
+	clientId = cJSON_GetObjectItemCaseSensitive(json, "clientId");
+	mqtt_client_id = clientId->valuestring;
+	host = cJSON_GetObjectItemCaseSensitive(json, "host");
+	mqtt_host = host->valuestring;
 
 	/* Use cert key from Krypton request to download cert */ 
-
-	printk("Requesting certificate\n");
+	printk("Requesting public certificate\n");
 	const cJSON *certId = cJSON_GetObjectItemCaseSensitive(json, "certificateId");
 
 	char http_request[200];
@@ -337,8 +336,6 @@ int provision_certs()
 	strcat(http_request, CERT_HEAD_END);
 
 	size_t cert_head_length = (sizeof(http_request)-1);
-
-	printk("Request is: %s\n", http_request);
 
 	err = getaddrinfo("krypton.soracom.io", NULL, &hints, &res);
 	if (err) {
@@ -395,13 +392,11 @@ int provision_certs()
 	/* Print HTTP response */
 	p = strstr(cert_recv_buf, "\r\n\r\n");
 	if (p) {
-		//cert_recv_buf[off - 1] = '\0';
-		//off = p - cert_recv_buf;
-		//p = cert_recv_buf + off;
-		//p = strstr(p, "\"");
-		//p++;
-		//printk("\n>\t %s\n\n", p);
-		//printk("\n>\t %s\n\n", recv_buf + off);
+		cert_recv_buf[off - 1] = '\0';
+		off = p - cert_recv_buf;
+		p = cert_recv_buf + off;
+		p = strstr(p, "\"");
+		p++;
 	} else
 	{
 		printk("Krypton did not return public certificate\n");
@@ -409,31 +404,13 @@ int provision_certs()
 		goto clean_up;
 	}
 	
-	//const cJSON *publicCert = cJSON_CreateString(cert_recv_buf + off);
-
 	char c[] = "\\n"; 
     char d[] = "\n"; 
-	char* result = p;
 
-	//result = replace_char(p, c, d);
-
-	//parse out double quotes
-	//p++;
-	//p[strlen(p)-1] = 0;
+	pub = replace_char(p, c, d);
 
 	/* Store cert */
-	printk("Provisioning public certificate\n");
-	printk("Public Cert Received! \n%s\n", result);
-
-	printk("Length of public cert is: %d\n", strlen(result));
-	/*  Provision certificate to the modem */
-	err = modem_key_mgmt_write(33,
-				MODEM_KEY_MGMT_CRED_TYPE_PUBLIC_CERT,
-				result + 1, strlen(result) - 2);
-	if (err) {
-		printk("Failed to provision public certificate, err %d\n", err);
-		goto clean_up;
-	}
+	printk("Requesting Root CA certificate\n");
 
 	/* Request AWS Root CA Cert */ 
 	err = getaddrinfo("krypton.soracom.io", NULL, &hints, &res);
@@ -491,13 +468,11 @@ int provision_certs()
 	/* Print HTTP response */
 	p = strstr(root_ca_recv_buf, "\r\n\r\n");
 	if (p) {
-		//root_ca_recv_buf[off - 1] = '\0';
-		//off = p - root_ca_recv_buf;
-		//p = root_ca_recv_buf + off;
-		//p = strstr(p, "\"");
-		//p++;
-		//printk("\n>\t %s\n\n", recv_buf);
-		//printk("\n>\t %s\n\n", recv_buf + off);
+		root_ca_recv_buf[off - 1] = '\0';
+		off = p - root_ca_recv_buf;
+		p = root_ca_recv_buf + off;
+		p = strstr(p, "\"");
+		p++;
 	} else
 	{
 		printk("Krypton did not return root CA certificate\n");
@@ -505,31 +480,70 @@ int provision_certs()
 		goto clean_up;
 	}
 
-	//result = replace_char(p, c, d);
-	result = p;
+	root = replace_char(p, c, d);
 
-	/* Store cert */ 
-	printk("Provisioning root CA certificate to the modem\n");
-	printk("Root CA Received! \n%s\n", result);
-	printk("Length of root ca is: %d\n", strlen(result));
+	printk("Finished downloading certificates, closing socket.\n");
+	freeaddrinfo(res);
+	(void)close(fd);
 
-	//compare root CAs
-	err = modem_key_mgmt_cmp(122, MODEM_KEY_MGMT_CRED_TYPE_CA_CHAIN, result + 1, strlen(result) - 2);
-	printk("credential compare: %d\n", err);
+	//turn off modem
+	printk("Turning modem to offline\n");
+
+	err = lte_lc_offline();
+	if (err) {
+		printk("Failed to disconnect from the LTE network, err %d\n", err);
+		goto clean_up;
+	}
+	k_sleep(delay);
+
+	printk("Storing private key...\n");
 
 	/*  Provision certificate to the modem */
-	err = modem_key_mgmt_write(33,
+	err = modem_key_mgmt_write(CONFIG_SEC_TAG,
+				MODEM_KEY_MGMT_CRED_TYPE_PRIVATE_CERT,
+				privateKey->valuestring, strlen(privateKey->valuestring));
+	if (err) {
+		printk("Failed to provision certificate, err %d\n", err);
+		goto clean_up;
+	}
+
+	printk("Storing public key...\n");
+	/*  Provision certificate to the modem */
+	err = modem_key_mgmt_write(CONFIG_SEC_TAG,
+				MODEM_KEY_MGMT_CRED_TYPE_PUBLIC_CERT,
+				pub, strlen(pub));
+	if (err) {
+		printk("Failed to provision public certificate, err %d\n", err);
+		goto clean_up;
+	}
+
+	printk("Storing Root CA...\n");
+	/*  Provision certificate to the modem */
+	printk("Provisioning root CA certificate to the modem\n");
+	err = modem_key_mgmt_write(CONFIG_SEC_TAG,
 				MODEM_KEY_MGMT_CRED_TYPE_CA_CHAIN,
-				result + 1, strlen(result) - 2);
+				root, strlen(root));
 	if (err) {
 		printk("Failed to provision root CA certificate, err %d\n", err);
 		goto clean_up;
 	}
+	printk("Credentials Stored. Bringing modem online.\n");
 
-	printk("Finished, closing socket.\n");
+	//turn on modem
+	err = lte_lc_normal();
+	if (err) {
+		printk("Failed to connect to the LTE network, err %d\n", err);
+		goto clean_up;
+	}
+	printk("OK\n");
+	
+	k_sleep(delay);
 
-	freeaddrinfo(res);
-	(void)close(fd);
+	enum lte_lc_nw_reg_status status;
+	lte_lc_nw_reg_status_get(&status);
+	printk("Network Status: %d\n", status);
+
+	k_sleep(delay);
 
 	return 0;
 
@@ -723,11 +737,11 @@ static void broker_init(void)
 		.ai_socktype = SOCK_STREAM
 	};
 
-	err = getaddrinfo(CONFIG_MQTT_BROKER_HOSTNAME, NULL, &hints, &result);
-	if (err) {
+	err = getaddrinfo(mqtt_host, NULL, &hints, &result);
+	while (err) {
 		printk("ERROR: getaddrinfo failed %d\n", err);
-
-		return;
+		err = getaddrinfo(mqtt_host, NULL, &hints, &result);
+		//return;
 	}
 
 	addr = result;
@@ -778,8 +792,8 @@ static void client_init(struct mqtt_client *client)
 	/* MQTT client configuration */
 	client->broker = &broker;
 	client->evt_cb = mqtt_evt_handler;
-	client->client_id.utf8 = (u8_t *)CONFIG_MQTT_CLIENT_ID;
-	client->client_id.size = strlen(CONFIG_MQTT_CLIENT_ID);
+	client->client_id.utf8 = (u8_t *)mqtt_client_id;
+	client->client_id.size = strlen(mqtt_client_id);
 	client->password = NULL;
 	client->user_name = NULL;
 	client->protocol_version = MQTT_VERSION_3_1_1;
@@ -800,7 +814,7 @@ static void client_init(struct mqtt_client *client)
     tls_config->cipher_list = NULL;
     tls_config->sec_tag_count = ARRAY_SIZE(sec_tag_list);
     tls_config->sec_tag_list = sec_tag_list;
-    tls_config->hostname = CONFIG_MQTT_BROKER_HOSTNAME;
+    tls_config->hostname = mqtt_host;
 
 }
 
@@ -861,10 +875,6 @@ void main(void)
 		printk("Failed to provision Krypton Certs, err %d\n", err);
 		return;
 	} 
-
-	/* printk("Root ca for krypton: \n%s\n", cert);
-	err = modem_key_mgmt_cmp(42, MODEM_KEY_MGMT_CRED_TYPE_CA_CHAIN, cert, sizeof(cert) - 1);
-	printk("credential compare: %d\n", err); */
 
 	/* Use stored certs to make AWS IoT Request */ 
 	printk("Using certs to connect to AWS IoT using MQTT\n");

@@ -1,5 +1,5 @@
 sample:
-  name: HTTPS client sample
+  name: Soracom Krypton client
 tests:
   test_build:
     build_only: true

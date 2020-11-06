@@ -18,7 +18,6 @@
 #include <net/mqtt.h>
 
 #define HTTPS_PORT 8036
-#define REWRITE_EXISTING_CERT false
 
 #define HTTP_HEAD                                                              \
 	"POST /v1/provisioning/aws/iot/bootstrap HTTP/1.1\r\n"                      \
@@ -27,7 +26,7 @@
 	"Content-Type: application/json\r\n\r\n"									 \
 	"{\"requestParameters\":{\"skipCertificates\":true}}"
 
-//#define HTTP_HEAD_LEN (sizeof(HTTP_HEAD) - 1)
+#define HTTP_HEAD_LEN (sizeof(HTTP_HEAD) - 1)
 
 #define CERT_HEAD_BEGIN "POST /v1/provisioning/aws/iot/certificates/"
 
@@ -46,11 +45,13 @@
 #define HTTP_HDR_END "\r\n\r\n"
 
 #define RECV_BUF_SIZE 4096
-#define SEND_BUF_SIZE 2048
 #define TLS_SEC_TAG 42
 
-static size_t http_head_len = (sizeof(HTTP_HEAD) - 1);
-static char send_buf[SEND_BUF_SIZE] = HTTP_HEAD;
+static const char send_buf[] = HTTP_HEAD;
+static const char root_ca_send_buf[] = ROOT_CA_HTTP_HEAD;
+static char recv_buf[RECV_BUF_SIZE];
+static char cert_recv_buf[RECV_BUF_SIZE];
+static char root_ca_recv_buf[RECV_BUF_SIZE];
 
 
 /* Buffers for MQTT client. */
@@ -186,12 +187,55 @@ int tls_setup(int fd)
 	return 0;
 }
 
-int http_request(char ** output)
+char* replace_char(const char* s, const char* oldW, 
+                  const char* newW) 
+{ 
+    char* result; 
+    int i, cnt = 0; 
+    int newWlen = strlen(newW); 
+    int oldWlen = strlen(oldW); 
+  
+    // Counting the number of times old word 
+    // occur in the string 
+    for (i = 0; s[i] != '\0'; i++) { 
+        if (strstr(&s[i], oldW) == &s[i]) { 
+            cnt++; 
+  
+            // Jumping to index after the old word. 
+            i += oldWlen - 1; 
+        } 
+    } 
+  
+    // Making new string of enough length 
+    result = (char*)malloc(i + cnt * (newWlen - oldWlen) + 1); 
+  
+    i = 0; 
+    while (*s) { 
+        // compare the substring with the result 
+        if (strstr(s, oldW) == s) { 
+            strcpy(&result[i], newW); 
+            i += newWlen; 
+            s += oldWlen; 
+        } 
+        else
+            result[i++] = *s++; 
+    } 
+  
+    result[i] = '\0'; 
+    return result; 
+} 
+
+int provision_certs() 
 {
-	int err = 0;
+	int err;
 	int fd;
 	char *p;
-	char recv_buf[RECV_BUF_SIZE];
+	const cJSON *privateKey;
+	const cJSON *clientId;
+	const cJSON *host;
+	char *pub;
+	char *root;
+
 	int bytes;
 	size_t off;
 	struct addrinfo *res;
@@ -199,6 +243,11 @@ int http_request(char ** output)
 		.ai_family = AF_INET,
 		.ai_socktype = SOCK_STREAM,
 	};
+
+	k_timeout_t delay = {60000};
+
+	printk("Downloading certificates from Krypton.\n");
+	printk("Requesting private key.\n");
 
 	err = getaddrinfo("krypton.soracom.io", NULL, &hints, &res);
 	if (err) {
@@ -229,13 +278,13 @@ int http_request(char ** output)
 
 	off = 0;
 	do {
-		bytes = send(fd, &send_buf[off], http_head_len - off, 0);
+		bytes = send(fd, &send_buf[off], HTTP_HEAD_LEN - off, 0);
 		if (bytes < 0) {
 			printk("send() failed, err %d\n", errno);
 			goto clean_up;
 		}
 		off += bytes;
-	} while (off < http_head_len);
+	} while (off < HTTP_HEAD_LEN);
 
 	printk("Sent %d bytes\n", off);
 
@@ -253,85 +302,191 @@ int http_request(char ** output)
 	printk("Received %d bytes\n", off);
 
 	/* Print HTTP response */
-	p = strstr(recv_buf, HTTP_HDR_END);
+	p = strstr(recv_buf, "\r\n\r\n");
 	if (p) {
 		recv_buf[off + 1] = '\0';
 		off = p - recv_buf;
 	} else
 	{
-		printk("Krypton did not return a response\n");
+		printk("Krypton did not return private key\n");
 		err = -1;
 		goto clean_up;
 	}
-	*output = recv_buf + off;
+	
+	/* Parse Krypton Response JSON */
+	char *responsebody = recv_buf + off;
+	
+	cJSON *json = cJSON_Parse(responsebody);
+	privateKey = cJSON_GetObjectItemCaseSensitive(json, "privateKey");
 
-	printk("Finished downloading certificate.\n");
+	//Store device client ID returned from Krypton to be used for the mqtt connection
+	clientId = cJSON_GetObjectItemCaseSensitive(json, "clientId");
+	mqtt_client_id = clientId->valuestring;
+	host = cJSON_GetObjectItemCaseSensitive(json, "host");
+	mqtt_host = host->valuestring;
 
-clean_up:
+	/* Use cert key from Krypton request to download cert */ 
+	printk("Requesting public certificate\n");
+	const cJSON *certId = cJSON_GetObjectItemCaseSensitive(json, "certificateId");
+
+	char http_request[200];
+
+	strcpy(http_request, CERT_HEAD_BEGIN);
+	strcat(http_request, certId->valuestring);
+	strcat(http_request, CERT_HEAD_END);
+
+	size_t cert_head_length = (sizeof(http_request)-1);
+
+	err = getaddrinfo("krypton.soracom.io", NULL, &hints, &res);
+	if (err) {
+		printk("getaddrinfo() failed, err %d\n", errno);
+		return err;
+	}
+
+	((struct sockaddr_in *)res->ai_addr)->sin_port = htons(HTTPS_PORT);
+
+	fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TLS_1_2);
+	if (fd == -1) {
+		printk("Failed to open socket!\n");
+		goto clean_up;
+	}
+
+	/* Setup TLS socket options */
+	err = tls_setup(fd);
+	if (err) {
+		goto clean_up;
+	}
+
+	printk("Connecting to %s\n", "krypton.soracom.io");
+	err = connect(fd, res->ai_addr, sizeof(struct sockaddr_in));
+	if (err) {
+		printk("connect() failed, err: %d\n", errno);
+		goto clean_up;
+	}
+
+	off = 0;
+	do {
+		bytes = send(fd, &http_request[off], cert_head_length - off, 0);
+		if (bytes < 0) {
+			printk("send() failed, err %d\n", errno);
+			goto clean_up;
+		}
+		off += bytes;
+	} while (off < cert_head_length);
+
+	printk("Sent %d bytes\n", off);
+
+	off = 0;
+	do {
+		bytes = recv(fd, &cert_recv_buf[off], RECV_BUF_SIZE - off, 0);
+		//printk("bytes: %d\n", bytes);
+		if (bytes < 0) {
+			printk("recv() failed, err %d\n", errno);
+			goto clean_up;
+		}
+		off += bytes;
+	} while (bytes != 0 /* peer closed connection */);
+
+	printk("Received %d bytes\n", off);
+
+	/* Print HTTP response */
+	p = strstr(cert_recv_buf, "\r\n\r\n");
+	if (p) {
+		cert_recv_buf[off - 1] = '\0';
+		off = p - cert_recv_buf;
+		p = cert_recv_buf + off;
+		p = strstr(p, "\"");
+		p++;
+	} else
+	{
+		printk("Krypton did not return public certificate\n");
+		err = -1;
+		goto clean_up;
+	}
+	
+	char c[] = "\\n"; 
+    char d[] = "\n"; 
+
+	pub = replace_char(p, c, d);
+
+	/* Store cert */
+	printk("Requesting Root CA certificate\n");
+
+	/* Request AWS Root CA Cert */ 
+	err = getaddrinfo("krypton.soracom.io", NULL, &hints, &res);
+	if (err) {
+		printk("getaddrinfo() failed, err %d\n", errno);
+		return err;
+	}
+
+	((struct sockaddr_in *)res->ai_addr)->sin_port = htons(HTTPS_PORT);
+
+	fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TLS_1_2);
+	if (fd == -1) {
+		printk("Failed to open socket!\n");
+		goto clean_up;
+	}
+
+	/* Setup TLS socket options */
+	err = tls_setup(fd);
+	if (err) {
+		goto clean_up;
+	}
+
+	printk("Connecting to %s\n", "krypton.soracom.io");
+	err = connect(fd, res->ai_addr, sizeof(struct sockaddr_in));
+	if (err) {
+		printk("connect() failed, err: %d\n", errno);
+		goto clean_up;
+	}
+
+	off = 0;
+	do {
+		bytes = send(fd, &root_ca_send_buf[off], ROOT_CA_HTTP_HEAD_LEN - off, 0);
+		if (bytes < 0) {
+			printk("send() failed, err %d\n", errno);
+			goto clean_up;
+		}
+		off += bytes;
+	} while (off < ROOT_CA_HTTP_HEAD_LEN);
+
+	printk("Sent %d bytes\n", off);
+
+	off = 0;
+	do {
+		bytes = recv(fd, &root_ca_recv_buf[off], RECV_BUF_SIZE - off, 0);
+		//printk("bytes: %d\n", bytes);
+		if (bytes < 0) {
+			printk("recv() failed, err %d\n", errno);
+			goto clean_up;
+		}
+		off += bytes;
+	} while (bytes != 0 /* peer closed connection */);
+
+	printk("Received %d bytes\n", off);
+
+	/* Print HTTP response */
+	p = strstr(root_ca_recv_buf, "\r\n\r\n");
+	if (p) {
+		root_ca_recv_buf[off - 1] = '\0';
+		off = p - root_ca_recv_buf;
+		p = root_ca_recv_buf + off;
+		p = strstr(p, "\"");
+		p++;
+	} else
+	{
+		printk("Krypton did not return root CA certificate\n");
+		err = -1;
+		goto clean_up;
+	}
+
+	root = replace_char(p, c, d);
+
+	printk("Finished downloading certificates, closing socket.\n");
 	freeaddrinfo(res);
 	(void)close(fd);
-	return err;
-}
 
-int provision_certs() 
-{
-	int err;
-	cJSON *json;
-	char *private_key;
-	char *public_cert;
-	char *root_ca;
-	k_timeout_t delay = {60000};
-
-	printk("Downloading certificates from Krypton.\n");
-	
-	printk("Requesting private key...\n");
-
-	err = http_request(&private_key);
-	if (err) {
-		printk("Request for Krypton private key failed\n");
-		return err;
-	}
-
-	json = cJSON_Parse(private_key);
-	private_key = cJSON_GetObjectItemCaseSensitive(json, "privateKey")->valuestring;
-
-	// Store MQTT settings returned from Krypton to be used for the MQTT connection
-	mqtt_client_id = cJSON_GetObjectItemCaseSensitive(json, "clientId")->valuestring;
-	mqtt_host = cJSON_GetObjectItemCaseSensitive(json, "host")->valuestring;
-
-	// Use cert key from first Krypton request to download cert
-	printk("Requesting public certificate...\n");
-	const cJSON *certId = cJSON_GetObjectItemCaseSensitive(json, "certificateId");
-	strcpy(send_buf, CERT_HEAD_BEGIN);
-	strcat(send_buf, certId->valuestring);
-	strcat(send_buf, CERT_HEAD_END);
-
-	http_head_len = strlen(send_buf);
-
-	err = http_request(&public_cert);
-	if (err) {
-		printk("Request for Krypton public certificate failed\n");
-		return err;
-	}
-
-	json = cJSON_Parse(public_cert);
-	public_cert = cJSON_GetObjectItemCaseSensitive(json, "certificate")->valuestring;
-
-	printk("Requesting Root CA certificate...\n");
-
-	strcpy(send_buf, ROOT_CA_HTTP_HEAD);
-	http_head_len = (sizeof(ROOT_CA_HTTP_HEAD)-1);
-
-	err = http_request(&root_ca);
-	if (err) {
-		printk("Request for Krypton public certificate failed\n");
-		return err;
-	}
-
-	json = cJSON_Parse(root_ca);
-	root_ca = cJSON_GetObjectItemCaseSensitive(json, "rootCaCertificate")->valuestring;
-
-	// Turn off modem to provision certificates
+	//turn off modem
 	printk("Turning modem to offline\n");
 
 	err = lte_lc_offline();
@@ -342,10 +497,11 @@ int provision_certs()
 	k_sleep(delay);
 
 	printk("Storing private key...\n");
+
 	/*  Provision certificate to the modem */
 	err = modem_key_mgmt_write(CONFIG_SEC_TAG,
 				MODEM_KEY_MGMT_CRED_TYPE_PRIVATE_CERT,
-				private_key, strlen(private_key));
+				privateKey->valuestring, strlen(privateKey->valuestring));
 	if (err) {
 		printk("Failed to provision certificate, err %d\n", err);
 		goto clean_up;
@@ -355,7 +511,7 @@ int provision_certs()
 	/*  Provision certificate to the modem */
 	err = modem_key_mgmt_write(CONFIG_SEC_TAG,
 				MODEM_KEY_MGMT_CRED_TYPE_PUBLIC_CERT,
-				public_cert, strlen(public_cert));
+				pub, strlen(pub));
 	if (err) {
 		printk("Failed to provision public certificate, err %d\n", err);
 		goto clean_up;
@@ -363,17 +519,17 @@ int provision_certs()
 
 	printk("Storing Root CA...\n");
 	/*  Provision certificate to the modem */
+	printk("Provisioning root CA certificate to the modem\n");
 	err = modem_key_mgmt_write(CONFIG_SEC_TAG,
 				MODEM_KEY_MGMT_CRED_TYPE_CA_CHAIN,
-				root_ca, strlen(root_ca));
+				root, strlen(root));
 	if (err) {
 		printk("Failed to provision root CA certificate, err %d\n", err);
 		goto clean_up;
 	}
-	
-	/* At this point, you could alternatively reboot the device to free up used memory. */
 	printk("Credentials Stored. Bringing modem online.\n");
 
+	//turn on modem
 	err = lte_lc_normal();
 	if (err) {
 		printk("Failed to connect to the LTE network, err %d\n", err);
@@ -392,6 +548,8 @@ int provision_certs()
 	return 0;
 
 clean_up:
+	freeaddrinfo(res);
+	(void)close(fd);
 	return err;
 }
 
@@ -711,28 +869,13 @@ void main(void)
 	}
 	printk("OK\n");
 	
-	/* Proviison X.509 Certs from Krypton */
-	bool exists;
-	u8_t unused;
-
-	err = modem_key_mgmt_exists(CONFIG_SEC_TAG,
-				MODEM_KEY_MGMT_CRED_TYPE_PRIVATE_CERT,
-				&exists, &unused);
+	/* Proviison Krypton Certs */
+ 	err = provision_certs();
 	if (err) {
-		printk("Failed to check if certificates exist, err %d\n", err);
+		printk("Failed to provision Krypton Certs, err %d\n", err);
 		return;
 	} 
 
-	if (!REWRITE_EXISTING_CERT && exists) {
-		printk("Krypton certs already exist, skipping provisioning and continuing on.\n");
-	} else {
-		err = provision_certs();
-		if (err) {
-			printk("Failed to provision Krypton Certs, err %d\n", err);
-			return;
-		} 
-	}
- 	
 	/* Use stored certs to make AWS IoT Request */ 
 	printk("Using certs to connect to AWS IoT using MQTT\n");
 	client_init(&client);

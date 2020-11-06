@@ -94,11 +94,6 @@ Building and running
 
 .. include:: /includes/build_and_run_nrf9160.txt
 
-Setup
-=======
-* Add custom configurations in prj.conf including the Publish and Subscribe topics for the application. 
-* Change CONFIG_REWRITE_EXISTING_CERT in main.c to true if you would like to application to request and flash new certificates
-each time it runs. Leave false to skip certificate provisioning if certs already exist in the security tag.
 
 Testing
 =======
@@ -109,7 +104,7 @@ After programming the sample to your board, test it by performing the following 
 2. Open a terminal emulator and observe that the sample starts, provisions certificates, 
   connects to the LTE network and to krypton.soracom.io, and then downloads all certificates.
 3. Observe that the modem goes into an offline state and stores the downloaded credentials.
-4. Observe the modem comes back online after storing credentials.
+4. Observe the modem come back online after storing credentials.
 5. Observe that the kit connects to the configured MQTT broker after it gets LTE connection.
    Now the kit is ready to echo whatever data is sent to it on the configured subscribe topic (``MQTT_SUB_TOPIC``).
 6. Use an MQTT client like the [AWS IoT MQTT Client](https://docs.aws.amazon.com/iot/latest/developerguide/view-mqtt-messages.html) or mosquitto to subscribe to and publish data to the broker.
@@ -126,28 +121,30 @@ The sample shows the following output:
   Provisioning certificate
   Waiting for network.. OK
   Downloading certificates from Krypton.
-  Requesting private key...
+  Requesting private key.
   Connecting to krypton.soracom.io
   Sent 182 bytes
-  Received 2116 bytes
-  Requesting public certificate...
+  Received 2120 bytes
+  Requesting public certificate
   Connecting to krypton.soracom.io
-  Sent 183 bytes
-  Received 1413 bytes
-  Requesting Root CA certificate...
+  Sent 199 bytes
+  Received 1393 bytes
+  Requesting Root CA certificate
   Connecting to krypton.soracom.io
   Sent 120 bytes
-  Received 1381 bytes
-  Finished downloading certificate.
+  Received 1361 bytes
+  Finished downloading certificates, closing socket.
   Turning modem to offline
   Storing private key...
   Storing public key...
   Storing Root CA...
-  Credentials Stored. Bringing modem online.
+  Provisioning root CA certificate to the modem
+  Credentials Stored. 
+  Bringing modem online.
   OK
   Network Status: 2
   Using certs to connect to AWS IoT using MQTT
-  IPv4 Address found <IP_ADDRESS>
+  IPv4 Address found 35.167.223.249
   [mqtt_evt_handler:666] MQTT client connected!
   Subscribing to: /my/subscribe/topic len 19
   [mqtt_evt_handler:716] SUBACK packet id: 1234

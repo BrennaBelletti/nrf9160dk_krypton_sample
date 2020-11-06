@@ -27,8 +27,6 @@
 	"Content-Type: application/json\r\n\r\n"									 \
 	"{\"requestParameters\":{\"skipCertificates\":true}}"
 
-//#define HTTP_HEAD_LEN (sizeof(HTTP_HEAD) - 1)
-
 #define CERT_HEAD_BEGIN "POST /v1/provisioning/aws/iot/certificates/"
 
 #define CERT_HEAD_END																	\

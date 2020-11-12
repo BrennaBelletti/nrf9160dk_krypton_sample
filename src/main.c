@@ -20,22 +20,22 @@
 #define HTTPS_PORT 8036
 #define REWRITE_EXISTING_CERT false
 
-#define HTTP_HEAD                                                              \
+#define HTTP_HEAD                                                               \
 	"POST /v1/provisioning/aws/iot/bootstrap HTTP/1.1\r\n"                      \
 	"Host: krypton.soracom.io:8036\r\n"                                         \
 	"Content-Length: 47\r\n"													\
-	"Content-Type: application/json\r\n\r\n"									 \
+	"Content-Type: application/json\r\n\r\n"									\
 	"{\"requestParameters\":{\"skipCertificates\":true}}"
 
 #define CERT_HEAD_BEGIN "POST /v1/provisioning/aws/iot/certificates/"
 
-#define CERT_HEAD_END																	\
+#define CERT_HEAD_END															\
 	" HTTP/1.1\r\n"                      										\
-	"Host: krypton.soracom.io:8036\r\n"                                         		\
+	"Host: krypton.soracom.io:8036\r\n"                                         \
 	"Content-Type: application/json\r\n\r\n"
 
-#define ROOT_CA_HTTP_HEAD                                                              \
-	"POST /v1/provisioning/aws/iot/ca_certificate HTTP/1.1\r\n"                      \
+#define ROOT_CA_HTTP_HEAD                                                       \
+	"POST /v1/provisioning/aws/iot/ca_certificate HTTP/1.1\r\n"                 \
 	"Host: krypton.soracom.io:8036\r\n"                                         \
 	"Content-Type: application/json\r\n\r\n"
 
@@ -105,7 +105,7 @@ int at_comms_init(void)
 }
 
 /* Provision certificate to modem */
-int cert_provision(void)
+int krypton_cert_provision(void)
 {
 	int err;
 	bool exists;
@@ -271,7 +271,7 @@ clean_up:
 	return err;
 }
 
-int provision_certs() 
+int bootstrap_aws_certs() 
 {
 	int err;
 	cJSON *json;
@@ -696,7 +696,7 @@ void main(void)
 	}
 
 	/* Provision krypton ssl certificates before connecting to the LTE network */
-	err = cert_provision();
+	err = krypton_cert_provision();
 	if (err) {
 		return;
 	}
@@ -724,7 +724,7 @@ void main(void)
 	if (!REWRITE_EXISTING_CERT && exists) {
 		printk("Krypton certs already exist, skipping provisioning and continuing on.\n");
 	} else {
-		err = provision_certs();
+		err = bootstrap_aws_certs();
 		if (err) {
 			printk("Failed to provision Krypton Certs, err %d\n", err);
 			return;
